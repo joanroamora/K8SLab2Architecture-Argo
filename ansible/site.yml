@@ -1,0 +1,279 @@
+---
+- name: Prepare Kubernetes nodes
+  hosts: k8s_nodes
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Install base packages
+      ansible.builtin.apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - containerd
+          - curl
+          - gnupg
+          - lsb-release
+        state: present
+        update_cache: true
+
+    - name: Disable swap for kubelet
+      ansible.builtin.command: swapoff -a
+      changed_when: false
+
+    - name: Disable persistent swap mounts
+      ansible.builtin.replace:
+        path: /etc/fstab
+        regexp: '^(.*\s+swap\s+.*)$'
+        replace: '# \1'
+
+    - name: Load Kubernetes kernel modules at boot
+      ansible.builtin.copy:
+        dest: /etc/modules-load.d/k8s.conf
+        mode: "0644"
+        content: |
+          br_netfilter
+          overlay
+
+    - name: Load overlay kernel module
+      ansible.builtin.command: modprobe overlay
+      changed_when: false
+
+    - name: Load br_netfilter kernel module
+      ansible.builtin.command: modprobe br_netfilter
+      changed_when: false
+
+    - name: Configure Kubernetes network sysctls
+      ansible.builtin.copy:
+        dest: /etc/sysctl.d/99-kubernetes-cri.conf
+        mode: "0644"
+        content: |
+          net.bridge.bridge-nf-call-iptables  = 1
+          net.bridge.bridge-nf-call-ip6tables = 1
+          net.ipv4.ip_forward                 = 1
+
+    - name: Apply sysctl configuration
+      ansible.builtin.command: sysctl --system
+      changed_when: false
+
+    - name: Generate default containerd configuration
+      ansible.builtin.command: containerd config default
+      register: containerd_default
+      changed_when: false
+
+    - name: Write containerd configuration
+      ansible.builtin.copy:
+        dest: /etc/containerd/config.toml
+        content: "{{ containerd_default.stdout }}\n"
+        mode: "0644"
+
+    - name: Enable systemd cgroups for containerd
+      ansible.builtin.replace:
+        path: /etc/containerd/config.toml
+        regexp: '^\s*SystemdCgroup = false$'
+        replace: '            SystemdCgroup = true'
+      notify: Restart containerd
+
+    - name: Create Kubernetes keyring directory
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: "0755"
+
+    - name: Download Kubernetes package signing key
+      ansible.builtin.get_url:
+        url: "https://pkgs.k8s.io/core:/stable:/{{ kubernetes_repo_minor }}/deb/Release.key"
+        dest: /tmp/kubernetes-release.key
+        mode: "0644"
+
+    - name: Install Kubernetes package signing key
+      ansible.builtin.command:
+        cmd: gpg --dearmor --yes --output /etc/apt/keyrings/kubernetes-apt-keyring.gpg /tmp/kubernetes-release.key
+      args:
+        creates: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+
+    - name: Configure Kubernetes package repository
+      ansible.builtin.apt_repository:
+        repo: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/{{ kubernetes_repo_minor }}/deb/ /"
+        filename: kubernetes
+        state: present
+
+    - name: Install Kubernetes node packages
+      ansible.builtin.apt:
+        name:
+          - kubeadm
+          - kubectl
+          - kubelet
+        state: present
+        update_cache: true
+
+    - name: Hold Kubernetes package versions
+      ansible.builtin.command: apt-mark hold kubelet kubeadm kubectl
+      changed_when: false
+
+    - name: Enable kubelet service
+      ansible.builtin.systemd:
+        name: kubelet
+        enabled: true
+
+  handlers:
+    - name: Restart containerd
+      ansible.builtin.systemd:
+        name: containerd
+        state: restarted
+        enabled: true
+
+- name: Initialize control plane
+  hosts: control_plane
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Install etcd client for the lab
+      ansible.builtin.apt:
+        name: etcd-client
+        state: present
+
+    - name: Initialize kubeadm control plane
+      ansible.builtin.command:
+        cmd: "kubeadm init --apiserver-advertise-address={{ ansible_host }} --pod-network-cidr={{ pod_cidr }} --upload-certs"
+      args:
+        creates: /etc/kubernetes/admin.conf
+
+    - name: Create root kubeconfig directory
+      ansible.builtin.file:
+        path: /root/.kube
+        state: directory
+        mode: "0700"
+
+    - name: Install root kubeconfig
+      ansible.builtin.copy:
+        src: /etc/kubernetes/admin.conf
+        dest: /root/.kube/config
+        remote_src: true
+        mode: "0600"
+
+    - name: Create ubuntu kubeconfig directory
+      ansible.builtin.file:
+        path: /home/ubuntu/.kube
+        state: directory
+        owner: ubuntu
+        group: ubuntu
+        mode: "0700"
+
+    - name: Install ubuntu kubeconfig
+      ansible.builtin.copy:
+        src: /etc/kubernetes/admin.conf
+        dest: /home/ubuntu/.kube/config
+        remote_src: true
+        owner: ubuntu
+        group: ubuntu
+        mode: "0600"
+
+    - name: Wait for Kubernetes API liveness
+      ansible.builtin.command: kubectl --kubeconfig=/etc/kubernetes/admin.conf get --raw=/livez
+      register: api_livez
+      changed_when: false
+      retries: 30
+      delay: 10
+      until: api_livez.rc == 0
+
+    - name: Download pinned Flannel manifest
+      ansible.builtin.get_url:
+        url: "{{ flannel_manifest_url }}"
+        dest: /opt/k8s-internals-kube-flannel.yml
+        mode: "0644"
+
+    - name: Apply Flannel CNI
+      ansible.builtin.command: kubectl --kubeconfig=/etc/kubernetes/admin.conf apply -f /opt/k8s-internals-kube-flannel.yml
+      changed_when: false
+
+    - name: Wait for Flannel DaemonSet
+      ansible.builtin.command: kubectl --kubeconfig=/etc/kubernetes/admin.conf -n kube-flannel rollout status daemonset/kube-flannel-ds --timeout=10m
+      changed_when: false
+
+    - name: Create fresh worker join command
+      ansible.builtin.command: kubeadm token create --print-join-command --ttl 24h
+      register: join_command
+      changed_when: false
+
+- name: Join worker node
+  hosts: workers
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Join worker to control plane
+      ansible.builtin.command:
+        cmd: "{{ hostvars[groups['control_plane'][0]].join_command.stdout }}"
+      args:
+        creates: /etc/kubernetes/kubelet.conf
+
+- name: Deploy lab workloads and GitOps
+  hosts: control_plane
+  become: true
+  gather_facts: false
+  vars:
+    kubeconfig: /etc/kubernetes/admin.conf
+  tasks:
+    - name: Wait for worker node readiness
+      ansible.builtin.command: "kubectl --kubeconfig={{ kubeconfig }} wait --for=condition=Ready node/{{ worker_node_name }} --timeout=15m"
+      changed_when: false
+
+    - name: Copy bootstrap manifests to control plane
+      ansible.builtin.copy:
+        src: "{{ item.src }}"
+        dest: "{{ item.dest }}"
+        mode: "0644"
+      loop:
+        - src: manifests/inspector.yaml
+          dest: /opt/k8s-internals-inspector.yaml
+        - src: manifests/argocd-server-nodeport.yaml
+          dest: /opt/k8s-internals-argocd-nodeport.yaml
+        - src: manifests/argocd-application.yaml
+          dest: /opt/k8s-internals-argocd-application.yaml
+
+    - name: Create Argo CD namespace
+      ansible.builtin.command: "kubectl --kubeconfig={{ kubeconfig }} create namespace argocd"
+      register: argocd_namespace
+      changed_when: argocd_namespace.rc == 0
+      failed_when: argocd_namespace.rc != 0 and 'AlreadyExists' not in argocd_namespace.stderr
+
+    - name: Install pinned Argo CD
+      ansible.builtin.command: "kubectl --kubeconfig={{ kubeconfig }} apply --server-side --force-conflicts -n argocd -f {{ argocd_install_url }}"
+      changed_when: false
+
+    - name: Wait for Argo CD Application CRD
+      ansible.builtin.command: "kubectl --kubeconfig={{ kubeconfig }} wait --for=condition=Established crd/applications.argoproj.io --timeout=5m"
+      changed_when: false
+
+    - name: Expose Argo CD HTTPS NodePort
+      ansible.builtin.command: "kubectl --kubeconfig={{ kubeconfig }} -n argocd patch service argocd-server --type=strategic --patch-file /opt/k8s-internals-argocd-nodeport.yaml"
+      changed_when: false
+
+    - name: Deploy K8s Architecture Inspector
+      ansible.builtin.command: "kubectl --kubeconfig={{ kubeconfig }} apply -f /opt/k8s-internals-inspector.yaml"
+      changed_when: false
+
+    - name: Wait for Argo CD server rollout
+      ansible.builtin.command: "kubectl --kubeconfig={{ kubeconfig }} -n argocd rollout status deployment/argocd-server --timeout=15m"
+      changed_when: false
+
+    - name: Wait for Inspector rollout
+      ansible.builtin.command: "kubectl --kubeconfig={{ kubeconfig }} -n k8s-inspector rollout status deployment/k8s-inspector --timeout=15m"
+      changed_when: false
+
+    - name: Create Argo CD sample Application
+      ansible.builtin.command: "kubectl --kubeconfig={{ kubeconfig }} apply -f /opt/k8s-internals-argocd-application.yaml"
+      changed_when: false
+
+    - name: Wait for Argo CD sample sync
+      ansible.builtin.command: "kubectl --kubeconfig={{ kubeconfig }} -n argocd wait --for=jsonpath='{.status.sync.status}'=Synced application/sandbox-demo --timeout=15m"
+      changed_when: false
+
+    - name: Wait for Argo CD sample health
+      ansible.builtin.command: "kubectl --kubeconfig={{ kubeconfig }} -n argocd wait --for=jsonpath='{.status.health.status}'=Healthy application/sandbox-demo --timeout=15m"
+      changed_when: false
+
+    - name: Assert Argo CD HTTPS NodePort
+      ansible.builtin.command: "kubectl --kubeconfig={{ kubeconfig }} -n argocd get service argocd-server -o jsonpath='{.spec.ports[?(@.port==443)].nodePort}'"
+      register: argocd_nodeport
+      changed_when: false
+      failed_when: argocd_nodeport.stdout != '30443'

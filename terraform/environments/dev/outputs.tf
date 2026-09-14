@@ -8,6 +8,11 @@ output "worker_external_ip" {
   value       = module.compute.worker_external_ip
 }
 
+output "ansible_controller_external_ip" {
+  description = "Ansible controller external IP."
+  value       = module.compute.controller_external_ip
+}
+
 output "inspector_url" {
   description = "K8s Architecture Inspector NodePort URL."
   value       = "http://${module.compute.master_external_ip}:30080"
@@ -29,4 +34,8 @@ output "ssh_master" {
 
 output "ssh_worker" {
   value = "gcloud compute ssh ${module.compute.worker_name} --zone ${var.zone} --project ${var.project_id}"
+}
+
+output "ssh_ansible_controller" {
+  value = "gcloud compute ssh ${module.compute.controller_name} --zone ${var.zone} --project ${var.project_id}"
 }

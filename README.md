@@ -10,12 +10,15 @@ Aprender cómo se comportan kube-apiserver, etcd, kube-scheduler, kube-controlle
 
 - 1 VM control plane: `e2-standard-2`, Ubuntu 22.04, disco SSD persistente de 30 GB, `auto_delete = true`.
 - 1 VM worker: `e2-medium` por defecto, Ubuntu 22.04, disco SSD persistente de 30 GB, `auto_delete = true`.
+- 1 VM Ansible Controller: `e2-small`, Ubuntu 22.04, disco balanced de 20 GB, `auto_delete = true`.
 - VPC custom sin subredes automáticas.
 - Firewall explícito para SSH, Kubernetes API, kubelet, etcd, Flannel VXLAN e intervalo NodePort.
 - kubeadm + containerd + Flannel.
 - Argo CD expuesto en `https://<MASTER_IP>:30443`.
 - K8s Architecture Inspector expuesto en `http://<MASTER_IP>:30080`.
 - Bucket GCS temporal y privado para bootstrap, con `force_destroy = true` y lifecycle de limpieza.
+
+Terraform solo administra infraestructura. El Ansible Controller instala y ejecuta Ansible dentro de GCP, genera una clave SSH efimera propia y configura master/worker por sus IPs privadas. No se instala Ansible ni ninguna dependencia global en tu equipo.
 
 ## Estructura
 
@@ -71,7 +74,7 @@ Como proteccion GitOps, `apply-dev.sh` compara el commit local con la rama remot
 
 `scripts/deploy-dev.sh` conserva el atajo para ejecutar ambas fases consecutivamente.
 
-El bootstrap valida Flannel, el rollout de Argo CD, el NodePort `30443`, el rollout del Inspector y que `sandbox-demo` quede `Synced` y `Healthy`. Si alguno falla, el startup script termina con error visible en `/var/log/k8s-internals-master-init.log`.
+El bootstrap valida Flannel, el rollout de Argo CD, el NodePort `30443`, el rollout del Inspector y que `sandbox-demo` quede `Synced` y `Healthy`. Si alguno falla, el controlador deja el error visible en `/var/log/k8s-internals-ansible-controller-init.log`.
 
 ## Destruir todo
 

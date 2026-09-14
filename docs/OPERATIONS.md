@@ -34,11 +34,15 @@ El Application debe indicar `Synced` y `Healthy`; el NodePort debe imprimir `304
 ## Watch Bootstrap Logs
 
 ```bash
-gcloud compute ssh k8s-internals-sandbox-master --zone us-central1-a --project bitcitychamp-project -- \
-  "sudo tail -f /var/log/k8s-internals-master-init.log"
+gcloud compute ssh k8s-internals-sandbox-ansible-controller --zone us-central1-a --project bitcitychamp-project -- \
+  "sudo tail -f /var/log/k8s-internals-ansible-controller-init.log"
+```
 
-gcloud compute ssh k8s-internals-sandbox-worker --zone us-central1-a --project bitcitychamp-project -- \
-  "sudo tail -f /var/log/k8s-internals-worker-init.log"
+## Re-run Configuration Management
+
+```bash
+gcloud compute ssh k8s-internals-sandbox-ansible-controller --zone us-central1-a --project bitcitychamp-project -- \
+  "sudo /opt/k8s-internals/ansible/run-ansible.sh"
 ```
 
 ## Cluster State

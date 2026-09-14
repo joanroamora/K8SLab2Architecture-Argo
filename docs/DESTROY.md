@@ -4,7 +4,7 @@ Este repo está diseñado para que `terraform destroy -auto-approve` elimine tod
 
 ## Se destruye
 
-- VMs master y worker
+- VMs master, worker y Ansible Controller
 - boot disks porque `auto_delete = true`
 - IPs externas efímeras atadas a las VMs
 - subred

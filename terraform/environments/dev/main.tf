@@ -26,6 +26,7 @@ locals {
   root_path   = abspath("${path.module}/../../..")
 
   bootstrap_objects = {
+    "ansible/site.yml"                      = file("${local.root_path}/ansible/site.yml")
     "manifests/inspector.yaml"              = file("${local.root_path}/kubernetes/inspector/inspector.yaml")
     "manifests/argocd-server-nodeport.yaml" = file("${local.root_path}/kubernetes/argocd/argocd-server-nodeport.yaml")
     "manifests/argocd-application.yaml" = templatefile("${local.root_path}/kubernetes/argocd/application.yaml.tpl", {
@@ -69,7 +70,7 @@ resource "google_storage_bucket_object" "bootstrap_manifests" {
 
 resource "google_service_account" "nodes" {
   account_id   = "${local.name_prefix}-nodes"
-  display_name = "kubeadm node bootstrap service account"
+  display_name = "kubeadm and Ansible bootstrap service account"
 }
 
 resource "google_storage_bucket_iam_member" "node_bootstrap_rw" {
@@ -98,21 +99,24 @@ module "compute" {
     google_storage_bucket_object.bootstrap_manifests
   ]
 
-  project_id            = var.project_id
-  name_prefix           = local.name_prefix
-  zone                  = var.zone
-  network_self_link     = module.vpc.network_self_link
-  subnetwork_self_link  = module.vpc.subnetwork_self_link
-  node_tags             = ["${local.name_prefix}-node"]
-  service_account_email = google_service_account.nodes.email
-  bootstrap_bucket      = google_storage_bucket.bootstrap.name
-  pod_cidr              = var.pod_cidr
-  kubernetes_repo_minor = var.kubernetes_repo_minor
-  flannel_manifest_url  = var.flannel_manifest_url
-  argocd_install_url    = var.argocd_install_url
-  master_machine_type   = var.master_machine_type
-  worker_machine_type   = var.worker_machine_type
-  boot_disk_size_gb     = var.boot_disk_size_gb
-  boot_disk_type        = var.boot_disk_type
-  labels                = var.labels
+  project_id                   = var.project_id
+  name_prefix                  = local.name_prefix
+  zone                         = var.zone
+  network_self_link            = module.vpc.network_self_link
+  subnetwork_self_link         = module.vpc.subnetwork_self_link
+  node_tags                    = ["${local.name_prefix}-node"]
+  service_account_email        = google_service_account.nodes.email
+  bootstrap_bucket             = google_storage_bucket.bootstrap.name
+  pod_cidr                     = var.pod_cidr
+  kubernetes_repo_minor        = var.kubernetes_repo_minor
+  flannel_manifest_url         = var.flannel_manifest_url
+  argocd_install_url           = var.argocd_install_url
+  master_machine_type          = var.master_machine_type
+  worker_machine_type          = var.worker_machine_type
+  controller_machine_type      = var.controller_machine_type
+  boot_disk_size_gb            = var.boot_disk_size_gb
+  boot_disk_type               = var.boot_disk_type
+  controller_boot_disk_size_gb = var.controller_boot_disk_size_gb
+  controller_boot_disk_type    = var.controller_boot_disk_type
+  labels                       = var.labels
 }

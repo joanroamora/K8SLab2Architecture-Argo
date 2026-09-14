@@ -51,6 +51,12 @@ variable "worker_machine_type" {
   default     = "e2-medium"
 }
 
+variable "controller_machine_type" {
+  description = "Ephemeral Ansible controller VM size."
+  type        = string
+  default     = "e2-small"
+}
+
 variable "boot_disk_size_gb" {
   description = "Boot disk size for both nodes."
   type        = number
@@ -61,6 +67,18 @@ variable "boot_disk_type" {
   description = "Boot disk type."
   type        = string
   default     = "pd-ssd"
+}
+
+variable "controller_boot_disk_size_gb" {
+  description = "Boot disk size for the Ansible controller."
+  type        = number
+  default     = 20
+}
+
+variable "controller_boot_disk_type" {
+  description = "Boot disk type for the Ansible controller."
+  type        = string
+  default     = "pd-balanced"
 }
 
 variable "kubernetes_repo_minor" {

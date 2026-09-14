@@ -43,7 +43,7 @@ jobs:
               --location "${TF_STATE_LOCATION}" \
               --uniform-bucket-level-access
           fi
-          gcloud storage buckets update "gs://${TF_STATE_BUCKET}" --public-access-prevention=enforced
+          gcloud storage buckets update "gs://${TF_STATE_BUCKET}" --public-access-prevention
 
       - name: Terraform init
         working-directory: terraform/environments/dev

@@ -18,7 +18,7 @@ ensure_state_bucket() {
       --location "$STATE_LOCATION" \
       --uniform-bucket-level-access
   fi
-  gcloud storage buckets update "gs://$STATE_BUCKET" --public-access-prevention=enforced >/dev/null
+  gcloud storage buckets update "gs://$STATE_BUCKET" --public-access-prevention >/dev/null
 }
 
 if [[ ! -f "$TERRAFORM_DIR/terraform.tfvars" ]]; then

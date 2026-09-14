@@ -25,6 +25,17 @@ if [[ ! -f "$PLAN_FILE" ]]; then
   exit 1
 fi
 
+if [[ "${GITOPS_REQUIRE_PUSHED_HEAD:-true}" == "true" ]]; then
+  LOCAL_BRANCH="$(git -C "$ROOT_DIR" branch --show-current)"
+  LOCAL_SHA="$(git -C "$ROOT_DIR" rev-parse HEAD)"
+  REMOTE_SHA="$(git -C "$ROOT_DIR" ls-remote --heads origin "refs/heads/$LOCAL_BRANCH" | awk 'NR == 1 { print $1 }')"
+
+  if [[ -z "$REMOTE_SHA" || "$LOCAL_SHA" != "$REMOTE_SHA" ]]; then
+    echo "GitOps source is not published. Push $LOCAL_BRANCH before apply, then generate a fresh plan." >&2
+    exit 1
+  fi
+fi
+
 terraform -chdir="$TERRAFORM_DIR" init -reconfigure \
   -backend-config="bucket=$STATE_BUCKET" \
   -backend-config="prefix=$STATE_PREFIX"

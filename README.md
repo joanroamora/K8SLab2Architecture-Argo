@@ -67,6 +67,8 @@ Despues del review explicito, aplica exactamente el archivo de plan guardado:
 scripts/apply-dev.sh
 ```
 
+Como proteccion GitOps, `apply-dev.sh` compara el commit local con la rama remota y se niega a crear infraestructura si aun no publicaste el codigo que Argo CD debe clonar.
+
 `scripts/deploy-dev.sh` conserva el atajo para ejecutar ambas fases consecutivamente.
 
 El bootstrap valida Flannel, el rollout de Argo CD, el NodePort `30443`, el rollout del Inspector y que `sandbox-demo` quede `Synced` y `Healthy`. Si alguno falla, el startup script termina con error visible en `/var/log/k8s-internals-master-init.log`.

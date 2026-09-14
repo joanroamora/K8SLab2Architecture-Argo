@@ -55,6 +55,7 @@ temp/
 # Local-only credentials and tool state
 .secrets/
 .gcloud/
+.gh/
 .local/
 .terraform.d/
 .terraformrc

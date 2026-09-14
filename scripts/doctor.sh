@@ -16,6 +16,7 @@ need gcloud
 need terraform
 need kubectl
 need python3
+need git
 
 printf "GCP account: "
 gcloud auth list --filter=status:ACTIVE --format="value(account)"

@@ -16,7 +16,7 @@ scripts/plan-dev.sh
 scripts/apply-dev.sh
 ```
 
-El Application de Argo CD apunta a `git_repo_url` y `git_revision` de `terraform.tfvars`; esa revision debe existir en remoto antes del apply.
+El Application de Argo CD apunta a `git_repo_url` y `git_revision` de `terraform.tfvars`; esa revision debe existir en remoto antes del apply. Como proteccion, `apply-dev.sh` compara el commit local con la punta de su rama remota y falla antes de crear infraestructura si el push aun no se ha realizado.
 
 ## Bootstrap Validation
 

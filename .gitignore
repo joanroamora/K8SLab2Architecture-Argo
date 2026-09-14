@@ -52,3 +52,16 @@ temp/
 .vscode/
 .DS_Store
 artifacts/
+
+# Local-only credentials and tool state
+.secrets/
+.gcloud/
+.local/
+.terraform.d/
+.terraformrc
+terraform.rc
+*.auto.tfvars
+*.p12
+service-account*.json
+*gcp*key*.json
+*credentials*.json

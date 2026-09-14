@@ -1,0 +1,72 @@
+name: destroy-dev
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type DESTROY to delete all lab infrastructure
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  terraform-destroy:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.inputs.confirm == 'DESTROY' }}
+    env:
+      TF_IN_AUTOMATION: "true"
+      TF_VAR_project_id: ${{ secrets.GCP_PROJECT_ID }}
+      TF_VAR_git_repo_url: https://github.com/${{ github.repository }}.git
+      TF_VAR_git_revision: ${{ github.ref_name }}
+      TF_STATE_BUCKET: ${{ secrets.GCP_PROJECT_ID }}-k8s-internals-sandbox-tfstate
+      TF_STATE_PREFIX: dev
+      TF_STATE_LOCATION: US-CENTRAL1
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Ensure Terraform state bucket
+        run: |
+          if ! gcloud storage buckets describe "gs://${TF_STATE_BUCKET}" >/dev/null 2>&1; then
+            gcloud storage buckets create "gs://${TF_STATE_BUCKET}" \
+              --project "${TF_VAR_project_id}" \
+              --location "${TF_STATE_LOCATION}" \
+              --uniform-bucket-level-access
+          fi
+          gcloud storage buckets update "gs://${TF_STATE_BUCKET}" --public-access-prevention=enforced
+
+      - name: Terraform init
+        working-directory: terraform/environments/dev
+        run: |
+          terraform init -reconfigure \
+            -backend-config="bucket=${TF_STATE_BUCKET}" \
+            -backend-config="prefix=${TF_STATE_PREFIX}"
+
+      - name: Terraform destroy
+        working-directory: terraform/environments/dev
+        run: terraform destroy -auto-approve
+
+      - name: Remove Terraform state bucket
+        run: gcloud storage rm --recursive "gs://${TF_STATE_BUCKET}" || true
+
+  refused:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.inputs.confirm != 'DESTROY' }}
+    steps:
+      - run: |
+          echo "Refused: confirmation must be exactly DESTROY"
+          exit 1

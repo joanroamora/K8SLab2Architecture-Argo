@@ -1,0 +1,9 @@
+# Strategic merge patch for the Service installed by Argo CD v3.5.2.
+# Keeping only the externally owned fields avoids replacing upstream selectors
+# or target ports during an Argo CD upgrade.
+spec:
+  type: NodePort
+  ports:
+    - name: https
+      port: 443
+      nodePort: 30443

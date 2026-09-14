@@ -1,0 +1,17 @@
+variable "project_id" { type = string }
+variable "name_prefix" { type = string }
+variable "zone" { type = string }
+variable "network_self_link" { type = string }
+variable "subnetwork_self_link" { type = string }
+variable "node_tags" { type = list(string) }
+variable "service_account_email" { type = string }
+variable "bootstrap_bucket" { type = string }
+variable "pod_cidr" { type = string }
+variable "kubernetes_repo_minor" { type = string }
+variable "flannel_manifest_url" { type = string }
+variable "argocd_install_url" { type = string }
+variable "master_machine_type" { type = string }
+variable "worker_machine_type" { type = string }
+variable "boot_disk_size_gb" { type = number }
+variable "boot_disk_type" { type = string }
+variable "labels" { type = map(string) }

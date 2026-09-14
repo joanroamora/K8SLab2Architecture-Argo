@@ -1,0 +1,26 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hello-gitops
+  namespace: sandbox-demo
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: hello-gitops
+  template:
+    metadata:
+      labels:
+        app: hello-gitops
+    spec:
+      containers:
+        - name: web
+          image: nginxinc/nginx-unprivileged:1.27-alpine
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10

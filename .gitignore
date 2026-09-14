@@ -4,6 +4,7 @@
 *.tfstate.*
 *.tfplan
 *.tfplan.json
+tfplan
 .terraform.tfstate.lock.info
 crash.log
 crash.*.log
@@ -32,6 +33,10 @@ gha-creds-*.json
 *.key
 id_rsa
 id_ed25519
+*.p12
+service-account*.json
+*gcp*key*.json
+*credentials*.json
 
 # Kubernetes secrets and local kubeconfig files
 *secret*.yaml
@@ -47,12 +52,6 @@ kubeconfig.*
 tmp/
 temp/
 
-# Editors, OS files, and downloaded diagnostics
-.idea/
-.vscode/
-.DS_Store
-artifacts/
-
 # Local-only credentials and tool state
 .secrets/
 .gcloud/
@@ -61,7 +60,9 @@ artifacts/
 .terraformrc
 terraform.rc
 *.auto.tfvars
-*.p12
-service-account*.json
-*gcp*key*.json
-*credentials*.json
+
+# Editors, OS files, and downloaded diagnostics
+.idea/
+.vscode/
+.DS_Store
+artifacts/

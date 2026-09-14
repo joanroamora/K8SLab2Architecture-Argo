@@ -1,0 +1,16 @@
+project_id = "bitcitychamp-project"
+region     = "us-central1"
+zone       = "us-central1-a"
+
+# For production hygiene, replace with your current public IP /32.
+admin_cidrs = ["0.0.0.0/0"]
+
+# Used by the sample Argo CD Application.
+git_repo_url = "https://github.com/joanroamora/K8SLab2Architecture-Argo.git"
+git_revision = "feature1architecture"
+
+# Cost-aware defaults.
+master_machine_type = "e2-standard-2"
+worker_machine_type = "e2-medium"
+boot_disk_size_gb   = 30
+boot_disk_type      = "pd-ssd"

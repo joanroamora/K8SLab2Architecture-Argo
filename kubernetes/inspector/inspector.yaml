@@ -1,0 +1,400 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: k8s-inspector
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: k8s-inspector
+  namespace: k8s-inspector
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: k8s-inspector-readonly
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "pods", "services", "endpoints", "namespaces"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets", "daemonsets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch"]
+  - nonResourceURLs: ["/livez", "/readyz", "/healthz"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: k8s-inspector-readonly
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: k8s-inspector-readonly
+subjects:
+  - kind: ServiceAccount
+    name: k8s-inspector
+    namespace: k8s-inspector
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: k8s-inspector-app
+  namespace: k8s-inspector
+data:
+  server.js: |
+    const http = require("http");
+    const https = require("https");
+    const fs = require("fs");
+    const path = require("path");
+
+    const token = fs.readFileSync("/var/run/secrets/kubernetes.io/serviceaccount/token", "utf8");
+    const ca = fs.readFileSync("/var/run/secrets/kubernetes.io/serviceaccount/ca.crt");
+    const host = process.env.KUBERNETES_SERVICE_HOST;
+    const port = process.env.KUBERNETES_SERVICE_PORT || "443";
+
+    function k8s(pathname) {
+      return new Promise((resolve, reject) => {
+        const req = https.request({
+          host,
+          port,
+          path: pathname,
+          method: "GET",
+          ca,
+          headers: { Authorization: `Bearer ${token}` }
+        }, (res) => {
+          let body = "";
+          res.on("data", chunk => body += chunk);
+          res.on("end", () => {
+            if (res.statusCode >= 200 && res.statusCode < 300) {
+              try { resolve(JSON.parse(body || "{}")); } catch { resolve({ raw: body }); }
+            } else {
+              reject(new Error(`${pathname} -> ${res.statusCode}: ${body.slice(0, 200)}`));
+            }
+          });
+        });
+        req.on("error", reject);
+        req.setTimeout(4000, () => req.destroy(new Error("timeout")));
+        req.end();
+      });
+    }
+
+    function podReady(pod) {
+      const conditions = pod.status?.conditions || [];
+      return conditions.some(c => c.type === "Ready" && c.status === "True");
+    }
+
+    function phaseOfPods(pods, match) {
+      const items = pods.items.filter(match);
+      const ready = items.filter(p => p.status?.phase === "Running" && podReady(p)).length;
+      return { count: items.length, ready, ok: items.length > 0 && ready === items.length, pods: items.map(p => ({ name: p.metadata.name, phase: p.status?.phase || "Unknown", node: p.spec?.nodeName || "unscheduled", ready: podReady(p) })) };
+    }
+
+    function isControlPlane(node) {
+      return Object.prototype.hasOwnProperty.call(
+        node.metadata?.labels || {},
+        "node-role.kubernetes.io/control-plane"
+      );
+    }
+
+    function nodeSummary(nodes, leases) {
+      const leasesByNode = new Map((leases.items || []).map(lease => [
+        lease.spec?.holderIdentity || lease.metadata?.name,
+        lease
+      ]));
+
+      return nodes.items.map(n => {
+        const ready = (n.status?.conditions || []).find(c => c.type === "Ready");
+        const lease = leasesByNode.get(n.metadata.name);
+        const renewedAt = lease?.spec?.renewTime || null;
+        const renewedMs = renewedAt ? new Date(renewedAt).getTime() : NaN;
+        const leaseAgeSeconds = Number.isFinite(renewedMs)
+          ? Math.max(0, Math.floor((Date.now() - renewedMs) / 1000))
+          : null;
+        return {
+          name: n.metadata.name,
+          ready: ready?.status === "True",
+          reason: ready?.reason || "Unknown",
+          roles: Object.keys(n.metadata.labels || {}).filter(k => k.startsWith("node-role.kubernetes.io/")).map(k => k.split("/")[1] || "control-plane"),
+          controlPlane: isControlPlane(n),
+          leaseAgeSeconds
+        };
+      });
+    }
+
+    function component(name, status, explanation, impact) {
+      return { name, status, explanation, impact };
+    }
+
+    async function status() {
+      const now = new Date().toISOString();
+      try {
+        const [allPods, nodes, leases, livez] = await Promise.allSettled([
+          k8s("/api/v1/pods"),
+          k8s("/api/v1/nodes"),
+          k8s("/apis/coordination.k8s.io/v1/namespaces/kube-node-lease/leases"),
+          k8s("/livez")
+        ]);
+
+        if (allPods.status === "rejected" || nodes.status === "rejected") {
+          return { ok: false, generatedAt: now, apiReachable: false, error: String(allPods.reason || nodes.reason), controlPlane: [], workers: [], userPods: [] };
+        }
+
+        const pods = allPods.value;
+        const ns = nodeSummary(nodes.value, leases.status === "fulfilled" ? leases.value : { items: [] });
+        const cpNames = ["kube-apiserver", "etcd", "kube-scheduler", "kube-controller-manager"];
+        const cp = cpNames.map(name => {
+          const p = phaseOfPods(pods, pod => pod.metadata?.labels?.component === name || pod.metadata?.name?.startsWith(name));
+          const impacts = {
+            "kube-apiserver": "La API deja de aceptar cambios; kubectl, controllers y UI pierden control.",
+            "etcd": "Se pierde persistencia del estado; el control plane no puede leer/escribir objetos.",
+            "kube-scheduler": "Los Pods nuevos quedan Pending porque nadie les asigna nodo.",
+            "kube-controller-manager": "Se detiene la reconciliacion: ReplicaSets, Nodes y endpoints dejan de converger."
+          };
+          return component(name, p.ok ? "healthy" : "warning", `${p.ready}/${p.count} pods Ready`, impacts[name]);
+        });
+
+        const proxy = phaseOfPods(pods, pod => pod.metadata?.labels?.["k8s-app"] === "kube-proxy" || pod.metadata?.name?.startsWith("kube-proxy"));
+        const flannel = phaseOfPods(pods, pod => pod.metadata?.namespace === "kube-flannel" && (pod.metadata?.labels?.app === "flannel" || pod.metadata?.name?.includes("flannel")));
+        const workerNodes = ns.filter(node => !node.controlPlane);
+        const readyWorkers = workerNodes.filter(node => node.ready);
+        const freshKubelets = workerNodes.filter(node => node.leaseAgeSeconds !== null && node.leaseAgeSeconds <= 90);
+        const workers = [
+          component("worker nodes", workerNodes.length > 0 && readyWorkers.length === workerNodes.length ? "healthy" : "warning", `${readyWorkers.length}/${workerNodes.length} workers Ready`, "Si un nodo cae a NotReady, el Node Lifecycle Controller empieza a marcar Pods como inciertos y luego desalojarlos."),
+          component("kubelet heartbeats", workerNodes.length > 0 && freshKubelets.length === workerNodes.length ? "healthy" : "warning", `${freshKubelets.length}/${workerNodes.length} Leases frescos (<90s)`, "El kubelet renueva su Lease. Si se detiene, el control plane deja de recibir heartbeats y el nodo termina NotReady."),
+          component("kube-proxy", proxy.ok ? "healthy" : "warning", `${proxy.ready}/${proxy.count} pods Ready`, "Sin kube-proxy se rompen reglas iptables/IPVS para Services y NodePorts."),
+          component("flannel", flannel.ok ? "healthy" : "warning", `${flannel.ready}/${flannel.count} pods Ready`, "Sin CNI los Pods pierden red entre nodos.")
+        ];
+
+        const userPods = pods.items
+          .filter(p => !["kube-system", "kube-flannel", "argocd", "k8s-inspector", "kube-public", "kube-node-lease"].includes(p.metadata?.namespace))
+          .map(p => {
+            const scheduled = (p.status?.conditions || []).find(c => c.type === "PodScheduled");
+            return {
+              namespace: p.metadata.namespace,
+              name: p.metadata.name,
+              phase: p.status?.phase || "Unknown",
+              node: p.spec?.nodeName || "",
+              scheduled: scheduled?.status === "True",
+              scheduleReason: scheduled?.reason || "Pending scheduling"
+            };
+          });
+
+        return { ok: true, generatedAt: now, apiReachable: livez.status === "fulfilled", nodes: ns, controlPlane: cp, workers, userPods };
+      } catch (err) {
+        return { ok: false, generatedAt: now, apiReachable: false, error: String(err), controlPlane: [], workers: [], userPods: [] };
+      }
+    }
+
+    const server = http.createServer(async (req, res) => {
+      if (req.url === "/healthz") {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end('{"ok":true}');
+        return;
+      }
+      if (req.url === "/api/status") {
+        const data = await status();
+        res.writeHead(data.ok ? 200 : 503, { "content-type": "application/json" });
+        res.end(JSON.stringify(data));
+        return;
+      }
+      const file = req.url === "/" ? "/usr/src/app/index.html" : path.join("/usr/src/app", req.url);
+      if (file !== "/usr/src/app/index.html") {
+        res.writeHead(404);
+        res.end("not found");
+        return;
+      }
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(fs.readFileSync(file));
+    });
+
+    server.listen(8080, () => console.log("K8s Architecture Inspector on :8080"));
+  index.html: |
+    <!doctype html>
+    <html lang="en">
+    <head>
+      <meta charset="utf-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1" />
+      <title>K8s Architecture Inspector</title>
+      <script src="https://cdn.tailwindcss.com"></script>
+    </head>
+    <body class="bg-zinc-950 text-zinc-100 min-h-screen">
+      <main class="max-w-7xl mx-auto px-4 py-6">
+        <section class="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between border-b border-zinc-800 pb-4">
+          <div>
+            <h1 class="text-3xl font-semibold tracking-tight">K8s Architecture Inspector</h1>
+            <p class="text-zinc-400">Control Plane vs Data Plane, observed live from inside the cluster.</p>
+          </div>
+          <div id="heartbeat" class="text-sm px-3 py-2 rounded border border-zinc-700 bg-zinc-900">starting...</div>
+        </section>
+
+        <section class="grid lg:grid-cols-2 gap-4 mt-6">
+          <div class="border border-zinc-800 rounded-lg p-4 bg-zinc-900/70">
+            <div class="flex items-center justify-between gap-3">
+              <h2 class="text-xl font-semibold">Control Plane</h2>
+              <span class="text-xs text-zinc-400" title="Static Pods managed by kubelet on the master node.">static pods</span>
+            </div>
+            <div id="control-plane" class="grid gap-3 mt-4"></div>
+          </div>
+
+          <div class="border border-zinc-800 rounded-lg p-4 bg-zinc-900/70">
+            <div class="flex items-center justify-between gap-3">
+              <h2 class="text-xl font-semibold">Worker Nodes</h2>
+              <span class="text-xs text-zinc-400" title="Node readiness, kube-proxy and CNI health.">data plane</span>
+            </div>
+            <div id="workers" class="grid gap-3 mt-4"></div>
+          </div>
+        </section>
+
+        <section class="grid lg:grid-cols-2 gap-4 mt-4">
+          <div class="border border-zinc-800 rounded-lg p-4 bg-zinc-900/70">
+            <h2 class="text-xl font-semibold">Nodes</h2>
+            <div id="nodes" class="grid gap-2 mt-4"></div>
+          </div>
+          <div class="border border-zinc-800 rounded-lg p-4 bg-zinc-900/70">
+            <h2 class="text-xl font-semibold">User Pods</h2>
+            <div id="pods" class="grid gap-2 mt-4"></div>
+          </div>
+        </section>
+      </main>
+
+      <script>
+        const statusClasses = {
+          healthy: "border-emerald-700 bg-emerald-950/40 text-emerald-100",
+          warning: "border-red-700 bg-red-950/50 text-red-100",
+          unknown: "border-amber-700 bg-amber-950/40 text-amber-100"
+        };
+
+        function card(c) {
+          const cls = statusClasses[c.status] || statusClasses.unknown;
+          return `<article class="border ${cls} rounded-md p-3">
+            <div class="flex items-center justify-between gap-3">
+              <h3 class="font-semibold">${c.name}</h3>
+              <span class="text-xs uppercase tracking-wide">${c.status}</span>
+            </div>
+            <p class="text-sm mt-2 opacity-90">${c.explanation}</p>
+            <p class="text-xs mt-2 opacity-75" title="Capability lost when this component fails.">${c.impact}</p>
+          </article>`;
+        }
+
+        function row(items, empty) {
+          if (!items || items.length === 0) return `<p class="text-sm text-zinc-400">${empty}</p>`;
+          return items.map(i => {
+            const state = i.phase || (i.ready ? "Ready" : "NotReady");
+            const detail = i.node
+              ? "@ " + i.node
+              : i.scheduled === false
+                ? i.scheduleReason
+                : typeof i.leaseAgeSeconds === "number"
+                  ? "Lease " + i.leaseAgeSeconds + "s"
+                  : "";
+            return `<div class="flex items-center justify-between border border-zinc-800 rounded px-3 py-2 bg-zinc-950/50 text-sm">
+              <span>${i.namespace ? i.namespace + "/" : ""}${i.name}</span>
+              <span class="text-zinc-400">${state}${detail ? " | " + detail : ""}</span>
+            </div>`;
+          }).join("");
+        }
+
+        async function refresh() {
+          const hb = document.getElementById("heartbeat");
+          try {
+            const res = await fetch("/api/status", { cache: "no-store" });
+            const data = await res.json();
+            hb.textContent = `${data.apiReachable ? "API reachable" : "API degraded"} · ${new Date(data.generatedAt).toLocaleTimeString()}`;
+            hb.className = `text-sm px-3 py-2 rounded border ${data.apiReachable ? "border-emerald-700 bg-emerald-950/40" : "border-red-700 bg-red-950/50"}`;
+            document.getElementById("control-plane").innerHTML = (data.controlPlane || []).map(card).join("");
+            document.getElementById("workers").innerHTML = (data.workers || []).map(card).join("");
+            document.getElementById("nodes").innerHTML = row(data.nodes, "No nodes visible.");
+            document.getElementById("pods").innerHTML = row(data.userPods, "No user workloads yet.");
+          } catch (e) {
+            hb.textContent = "Inspector cannot reach Kubernetes API";
+            hb.className = "text-sm px-3 py-2 rounded border border-red-700 bg-red-950/50";
+          }
+        }
+        refresh();
+        setInterval(refresh, 5000);
+      </script>
+    </body>
+    </html>
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-inspector
+  namespace: k8s-inspector
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: k8s-inspector
+  template:
+    metadata:
+      labels:
+        app: k8s-inspector
+    spec:
+      serviceAccountName: k8s-inspector
+      automountServiceAccountToken: true
+      containers:
+        - name: inspector
+          image: node:22-alpine
+          imagePullPolicy: IfNotPresent
+          command: ["node", "/usr/src/app/server.js"]
+          ports:
+            - name: http
+              containerPort: 8080
+          volumeMounts:
+            - name: app
+              mountPath: /usr/src/app/server.js
+              subPath: server.js
+            - name: app
+              mountPath: /usr/src/app/index.html
+              subPath: index.html
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            runAsNonRoot: true
+            runAsUser: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 20
+      volumes:
+        - name: app
+          configMap:
+            name: k8s-inspector-app
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: k8s-inspector
+  namespace: k8s-inspector
+spec:
+  type: NodePort
+  selector:
+    app: k8s-inspector
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+      nodePort: 30080

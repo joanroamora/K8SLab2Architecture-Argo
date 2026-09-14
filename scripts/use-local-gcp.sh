@@ -1,7 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DISCOVERED_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+LOCAL_WSL_ROOT="${K8S_LAB_LOCAL_ROOT:-/home/joanr/agentic-platforms/GCP/K8SLab2Architecture1}"
+
+# The WSLg mount is read-only for gcloud's SQLite state. Prefer the writable
+# Linux path when it contains this repository, while retaining an override.
+if [[ -d "$LOCAL_WSL_ROOT/.secrets" ]]; then
+  ROOT_DIR="$LOCAL_WSL_ROOT"
+else
+  ROOT_DIR="$DISCOVERED_ROOT"
+fi
 
 export GCP_PROJECT_ID="bitcitychamp-project"
 export GOOGLE_CLOUD_PROJECT="$GCP_PROJECT_ID"
